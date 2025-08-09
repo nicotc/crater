@@ -1,127 +1,52 @@
 version: '3'
+
 services:
-  db:
-    image: mysql:8.0
+  app:
+    build:
+      args:
+        user: crater-user
+        uid: 1000
+      context: ./
+      dockerfile: Dockerfile
+    image: crater-php
     restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_USER: crater
-      MYSQL_PASSWORD: ${DB_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-    command: >
-      --default-authentication-plugin=mysql_native_password
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
+    working_dir: /var/www/
+    volumes:
+      - ./:/var/www
+      - ./docker-compose/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:rw,delegated
+    networks:
+      - crater
+
+  db:
+    image: mariadb
+    restart: always
     volumes:
       - db:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 40
-      start_period: 120s
-    networks: [crater]
-
-  # Prepara la app: composer, .env, key, migraciones
-  init:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        user: crater-user
-        uid: 1000
-    image: crater-php:8.1
-    working_dir: /var/www
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      APP_ENV: production
-      APP_DEBUG: "false"
-      APP_URL: ${APP_URL}
-      DB_CONNECTION: mysql
-      DB_HOST: db
-      DB_DATABASE: ${DB_NAME}
-      DB_USERNAME: crater
-      DB_PASSWORD: ${DB_PASSWORD}
-      COMPOSER_ALLOW_SUPERUSER: "1"
-      COMPOSER_MEMORY_LIMIT: "-1"
-    volumes:
-      - ./:/var/www
-      - ./docker-compose/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:rw,delegated
-    command: >
-      bash -lc "
-      set -e;
-      composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction;
-      [ -f .env ] || cp .env.example .env;
-      sed -i 's|^APP_URL=.*|APP_URL=${APP_URL}|' .env || true;
-      php artisan key:generate --force || true;
-      php artisan storage:link || true;
-      php artisan config:cache || true;
-      php artisan migrate --force;
-      "
-    restart: "no"
-    networks: [crater]
-
-  app:
-    image: crater-php:8.1
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        user: crater-user
-        uid: 1000
-    restart: unless-stopped
-    working_dir: /var/www
-    depends_on:
-      db:
-        condition: service_healthy
-      init:
-        condition: service_completed_successfully
-    environment:
-      APP_ENV: production
-      APP_DEBUG: "false"
-      APP_URL: ${APP_URL}
-      DB_CONNECTION: mysql
-      DB_HOST: db
-      DB_DATABASE: ${DB_NAME}
-      DB_USERNAME: crater
-      DB_PASSWORD: ${DB_PASSWORD}
-    volumes:
-      - ./:/var/www
-      - ./docker-compose/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:rw,delegated
-    networks: [crater]
+      MYSQL_USER: crater
+      MYSQL_PASSWORD: crater
+      MYSQL_DATABASE: crater
+      MYSQL_ROOT_PASSWORD: crater
+    networks:
+      - crater
 
   nginx:
-    image: nginx:1.25-alpine
+    image: nginx:1.17-alpine
     restart: unless-stopped
-    depends_on:
-      app:
-        condition: service_started
     volumes:
       - ./:/var/www
       - ./docker-compose/nginx:/etc/nginx/conf.d/
-    # ⚠️ SIN ports: Traefik enruta por dominio al puerto interno 80
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 20s
-    networks: [crater]
+    networks:
+      - crater
 
   cron:
     build:
-      context: .
+      context: ./
       dockerfile: ./docker-compose/cron.dockerfile
-    restart: unless-stopped
-    working_dir: /var/www
-    depends_on:
-      app:
-        condition: service_started
     volumes:
       - ./:/var/www
-    networks: [crater]
+    networks:
+      - crater
 
 volumes:
   db:
@@ -129,3 +54,4 @@ volumes:
 networks:
   crater:
     driver: bridge
+
