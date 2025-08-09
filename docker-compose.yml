@@ -1,59 +1,127 @@
 version: '3'
 
 services:
-  app:
+  db:
+    image: mariadb:10.6
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: crater
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} --silent || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [crater]
+
+  # Tarea de inicialización: instala deps, .env, key, migraciones
+  init:
     build:
+      context: .
+      dockerfile: Dockerfile
       args:
         user: crater-user
         uid: 1000
-      context: ./
-      dockerfile: Dockerfile
-    image: crater-php
-    restart: unless-stopped
-    working_dir: /var/www/
+    image: crater-php:8.1
+    working_dir: /var/www
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: ${APP_URL}
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_DATABASE: ${DB_NAME}
+      DB_USERNAME: crater
+      DB_PASSWORD: ${DB_PASSWORD}
+      # Composer
+      COMPOSER_ALLOW_SUPERUSER: "1"
+      COMPOSER_MEMORY_LIMIT: "-1"
     volumes:
       - ./:/var/www
       - ./docker-compose/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:rw,delegated
-    networks:
-      - crater
+    command: >
+      bash -lc "
+      set -e;
+      composer --version || true;
+      composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction;
+      [ -f .env ] || cp .env.example .env;
+      sed -i \"s|^APP_URL=.*|APP_URL=$${APP_URL}|\" .env || true;
+      php artisan key:generate --force || true;
+      php artisan storage:link || true;
+      php artisan config:cache || true;
+      php artisan migrate --force;
+      "
+    restart: "no"
+    networks: [crater]
 
-  db:
-    image: mariadb
-    restart: always
-    volumes:
-      - db:/var/lib/mysql
-      # If you want to persist data on the host, comment the line above this one...
-      # and uncomment the line under this one.
-      #- ./docker-compose/db/data:/var/lib/mysql:rw,delegated
+  app:
+    image: crater-php:8.1
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        user: crater-user
+        uid: 1000
+    restart: unless-stopped
+    working_dir: /var/www
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
     environment:
-      MYSQL_USER: crater
-      MYSQL_PASSWORD: crater
-      MYSQL_DATABASE: crater
-      MYSQL_ROOT_PASSWORD: crater
-    ports:
-      - '33006:3306'
-    networks:
-      - crater
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: ${APP_URL}
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_DATABASE: ${DB_NAME}
+      DB_USERNAME: crater
+      DB_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./:/var/www
+      - ./docker-compose/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:rw,delegated
+    networks: [crater]
 
   nginx:
-    image: nginx:1.17-alpine
+    image: nginx:1.25-alpine
     restart: unless-stopped
-    ports:
-      - 80:80
+    depends_on:
+      app:
+        condition: service_started
     volumes:
       - ./:/var/www
       - ./docker-compose/nginx:/etc/nginx/conf.d/
-    networks:
-      - crater
+    # ⚠️ NO expongas puertos aquí (Traefik usa el 80 del host)
+    # En Dokploy → Domains: apuntar a este servicio con Container Port = 80
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [crater]
 
   cron:
     build:
-      context: ./
+      context: .
       dockerfile: ./docker-compose/cron.dockerfile
+    restart: unless-stopped
+    working_dir: /var/www
+    depends_on:
+      app:
+        condition: service_started
     volumes:
       - ./:/var/www
-    networks:
-      - crater
+    networks: [crater]
 
 volumes:
   db:
