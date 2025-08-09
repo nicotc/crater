@@ -1,25 +1,28 @@
 version: '3'
-
 services:
   db:
-    image: mariadb:10.6
+    image: mysql:8.0
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: ${DB_NAME}
       MYSQL_USER: crater
       MYSQL_PASSWORD: ${DB_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
     volumes:
       - db:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} --silent || exit 1"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 30
-      start_period: 60s
+      retries: 40
+      start_period: 120s
     networks: [crater]
 
-  # Tarea de inicialización: instala deps, .env, key, migraciones
+  # Prepara la app: composer, .env, key, migraciones
   init:
     build:
       context: .
@@ -41,7 +44,6 @@ services:
       DB_DATABASE: ${DB_NAME}
       DB_USERNAME: crater
       DB_PASSWORD: ${DB_PASSWORD}
-      # Composer
       COMPOSER_ALLOW_SUPERUSER: "1"
       COMPOSER_MEMORY_LIMIT: "-1"
     volumes:
@@ -50,10 +52,9 @@ services:
     command: >
       bash -lc "
       set -e;
-      composer --version || true;
       composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction;
       [ -f .env ] || cp .env.example .env;
-      sed -i \"s|^APP_URL=.*|APP_URL=$${APP_URL}|\" .env || true;
+      sed -i 's|^APP_URL=.*|APP_URL=${APP_URL}|' .env || true;
       php artisan key:generate --force || true;
       php artisan storage:link || true;
       php artisan config:cache || true;
@@ -100,8 +101,7 @@ services:
     volumes:
       - ./:/var/www
       - ./docker-compose/nginx:/etc/nginx/conf.d/
-    # ⚠️ NO expongas puertos aquí (Traefik usa el 80 del host)
-    # En Dokploy → Domains: apuntar a este servicio con Container Port = 80
+    # ⚠️ SIN ports: Traefik enruta por dominio al puerto interno 80
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null 2>&1 || exit 1"]
       interval: 10s
